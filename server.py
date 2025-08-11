@@ -2,7 +2,7 @@ import os
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-import openai 
+from openai import OpenAI
 
 # Get environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
@@ -12,13 +12,13 @@ if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
     raise ValueError("Missing TELEGRAM_TOKEN or OPENAI_API_KEY in environment variables.")
 
 # OpenAI client
-client = openai(api_key=OPENAI_API_KEY)
+client = OpenAI(api_key=OPENAI_API_KEY)
 
 # Flask app for Render
 app = Flask(__name__)
 
 # Allowed categories
-CATEGORIES = ['חומוס', 'שווארמה', 'מאפיה', 'מכולת', 'בשר', 'דגים', 'משתלה', 'ירקניה']
+CATEGORIES = ['חומוס', 'שווארמה', 'מאפיה', 'מכולת', 'בשר', 'דגים', 'משתלה']
 
 # Command handler for /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
