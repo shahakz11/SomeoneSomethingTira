@@ -1,68 +1,47 @@
 import os
 from flask import Flask, request
 from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 from openai import OpenAI
 
-# Get environment variables
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+# Initialize OpenAI client
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
-    raise ValueError("Missing TELEGRAM_TOKEN or OPENAI_API_KEY in environment variables.")
-
-# OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-# Flask app for Render
 app = Flask(__name__)
 
-# Allowed categories
-CATEGORIES = ['חומוס', 'שווארמה', 'מאפיה', 'מכולת', 'בשר', 'דגים', 'משתלה']
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+PORT = int(os.environ.get("PORT", 5000))
 
-# Command handler for /start
+# Telegram Bot setup
+application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Send the fixed message
-    await update.message.reply_text("מישהו משהו מטירה?")
+    await update.message.reply_text("Hello! Send me a message and I'll reply using AI.")
 
-    # Ask AI to return one category
-    prompt = f"אנא החזר רק קטגוריה אחת מתוך הרשימה: {', '.join(CATEGORIES)}."
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_text = update.message.text
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "אתה עוזר שבוחר קטגוריות רק מתוך הרשימה הנתונה."},
-            {"role": "user", "content": prompt}
-        ],
-        max_tokens=20
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": user_text}
+        ]
     )
+    await update.message.reply_text(response.choices[0].message.content)
 
-    ai_category = response.choices[0].message.content.strip()
-
-    # Ensure it's a valid category
-    if ai_category not in CATEGORIES:
-        ai_category = "מכולת"  # ברירת מחדל
-
-    await update.message.reply_text(ai_category)
-
-# Telegram bot setup
-application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
-# Flask route for health check
-@app.route('/')
-def home():
-    return "Bot is running!"
-
-# Webhook endpoint
-@app.route('/webhook', methods=['POST'])
+@app.route(f"/{TELEGRAM_TOKEN}", methods=["POST"])
 def webhook():
-    application.update_queue.put_nowait(Update.de_json(request.get_json(force=True), application.bot))
-    return "OK", 200
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.update_queue.put_nowait(update)
+    return "ok"
 
-if __name__ == '__main__':
-    import asyncio
-    async def run():
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling()
-    asyncio.run(run())
+@app.route("/")
+def index():
+    return "Bot is running"
+
+if __name__ == "__main__":
+    # For local testing
+    application.run_polling()
