@@ -12,7 +12,7 @@ if not TELEGRAM_TOKEN or not OPENAI_API_KEY:
     raise ValueError("Missing TELEGRAM_TOKEN or OPENAI_API_KEY in environment variables.")
 
 # OpenAI client
-client = OpenAI(api_key=OPENAI_API_KEY)
+client = openai(api_key=OPENAI_API_KEY)
 
 # Flask app for Render
 app = Flask(__name__)
