@@ -2,7 +2,7 @@ import os
 from flask import Flask, request
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from openai import OpenAI
+import openai 
 
 # Get environment variables
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
