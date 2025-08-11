@@ -1,30 +1,27 @@
 import os
 import logging
 import requests
-import textwrap
 from flask import Flask, request, jsonify
 
 # --- Logging ---
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("tira-bot")
 
-# --- Environment / configuration ---
-# Accept either BOT_TOKEN or TELEGRAM_TOKEN (backwards-compatible)
+# --- Environment / config ---
 BOT_TOKEN = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_TOKEN")
 if not BOT_TOKEN:
     log.error("Missing BOT_TOKEN / TELEGRAM_TOKEN environment variable.")
     raise RuntimeError("Missing BOT_TOKEN / TELEGRAM_TOKEN environment variable.")
 
-# Optional environment-provided IDs. If not provided, group/admin are discovered dynamically.
-GROUP_CHAT_ID_ENV = os.getenv("GROUP_CHAT_ID")  # e.g. -1234567890123
-ADMIN_ID_ENV = os.getenv("ADMIN_ID")  # e.g. 123456789
+GROUP_CHAT_ID_ENV = os.getenv("GROUP_CHAT_ID")  # e.g. -1001234567890
+ADMIN_ID_ENV = os.getenv("ADMIN_ID")            # e.g. 123456789
 
 group_chat_id = int(GROUP_CHAT_ID_ENV) if GROUP_CHAT_ID_ENV else None
 admin_id = int(ADMIN_ID_ENV) if ADMIN_ID_ENV else None
 
 TELEGRAM_API_URL = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# --- Categories (Hebrew) including the new ירקניה ---
+# --- Categories (Hebrew) including ירקניה ---
 CATEGORIES = [
     "חומוס",
     "שווארמה",
@@ -36,14 +33,13 @@ CATEGORIES = [
     "ירקניה",
 ]
 
-# In-memory storage for current session
+# --- In-memory session storage ---
 session_active = False
-orders = []  # list of dicts: {user_id, username, text, category, message_id}
+orders = []  # {user_id, username, text, category, message_id}
 
-# Flask app
 app = Flask(__name__)
 
-# --- Helper: send message to Telegram via HTTP API (synchronous) ---
+# --- Helper to send message via Telegram HTTP API ---
 def send_message(chat_id, text, reply_to_message_id=None):
     payload = {"chat_id": chat_id, "text": text}
     if reply_to_message_id:
@@ -52,18 +48,17 @@ def send_message(chat_id, text, reply_to_message_id=None):
         r = requests.post(f"{TELEGRAM_API_URL}/sendMessage", json=payload, timeout=10)
         if not r.ok:
             log.warning("Telegram sendMessage failed: %s %s", r.status_code, r.text)
-        return r.json()
+        return r.json() if r.ok else None
     except Exception as e:
         log.exception("Failed to send message to Telegram: %s", e)
         return None
 
-# --- Lightweight Hebrew keyword classifier (no external API) ---
+# --- Simple Hebrew keyword classifier (line-level) ---
 def normalize_text(t: str) -> str:
-    return t.replace("\n", " ").strip().lower()
+    return t.replace("\r", " ").replace("\n", " ").strip().lower()
 
 def classify_text(text: str) -> str:
     t = normalize_text(text)
-    # order matters a bit—more specific first
     if any(x in t for x in ["חומוס", "חומוסיה"]):
         return "חומוס"
     if any(x in t for x in ["שווארמה", "שוואר", "shawarma"]):
@@ -78,12 +73,11 @@ def classify_text(text: str) -> str:
         return "דגים"
     if any(x in t for x in ["משתלה", "עציץ", "צמח", "שתיל"]):
         return "משתלה"
-    if any(x in t for x in ["ירק", "ירקניה", "שוק ירקות", "ירקות", "פירות"]):
+    if any(x in t for x in ["ירק", "ירקניה", "שוק ירקות", "ירקות", "מלפפון", "מלפפונים", "חסה", "גזר"]):
         return "ירקניה"
-    # fallback
     return "מכולת"
 
-# --- Helper: build summary text group-by-category ---
+# --- Build grouped summary text ---
 def build_summary_text():
     grouped = []
     for cat in CATEGORIES:
@@ -94,7 +88,7 @@ def build_summary_text():
         return "אין הזמנות כרגע."
     return "סיכום הזמנות:\n\n" + "\n\n".join(grouped)
 
-# --- Webhook route for Telegram ---
+# --- Webhook endpoint ---
 @app.route("/webhook", methods=["POST"])
 def webhook():
     global session_active, orders, group_chat_id, admin_id
@@ -103,7 +97,6 @@ def webhook():
     if not data:
         return jsonify({"ok": False, "error": "no json"}), 400
 
-    # We only handle standard 'message' updates
     message = data.get("message") or data.get("edited_message")
     if not message:
         return jsonify({"ok": True})
@@ -117,37 +110,53 @@ def webhook():
 
     log.info("Received message from %s (%s) in chat %s: %s", username, user_id, chat_id, text[:120])
 
-    # If /start command in the intended group: begin session
+    # /start initializes session in the group
     if text.startswith("/start"):
-        # If group not configured, accept this chat as the group
         if group_chat_id is None:
             group_chat_id = chat_id
-            log.info("GROUP_CHAT_ID was not set; now set to %s", group_chat_id)
+            log.info("GROUP_CHAT_ID set to %s", group_chat_id)
         if chat_id != group_chat_id:
             send_message(chat_id, "פקודה זו מותרת רק בקבוצה הראשית.")
             return jsonify({"ok": True})
 
         session_active = True
         orders = []
-        # If admin not configured, set the command sender as admin
         if admin_id is None:
             admin_id = user_id
             send_message(admin_id, f"אתה הוגדרת כמנהל הזמנות (id={admin_id}).")
-            log.info("ADMIN_ID was not set; now set to %s", admin_id)
+            log.info("ADMIN_ID set to %s", admin_id)
 
-        send_message(group_chat_id, "מישהו משהו מטירה? כתבו כאן מה אתם רוצים, ואז מנהל יכול לבקש /summary כדי לקבל סיכום.")
+        send_message(group_chat_id, "מישהו משהו מטירה?")
         return jsonify({"ok": True})
 
-    # /summary - allowed only for admin (can be sent from private chat or group)
+    # /summary - admin only
     if text.startswith("/summary"):
         if admin_id is None or user_id != admin_id:
             send_message(chat_id, "אינך מורשה לבקש סיכום.")
             return jsonify({"ok": True})
+
         summary = build_summary_text()
-        # Telegram limit ~4096 - split into chunks of 3500 to be safe
         max_chunk = 3500
-        for i in range(0, len(summary), max_chunk):
-            send_message(admin_id, summary[i : i + max_chunk])
+
+        # Try to send privately first (if admin_id set)
+        sent_privately = True
+        if admin_id:
+            for i in range(0, len(summary), max_chunk):
+                resp = send_message(admin_id, summary[i : i + max_chunk])
+                if not resp:
+                    sent_privately = False
+                    break
+        else:
+            sent_privately = False
+
+        if not sent_privately:
+            # Fallback: post the summary in the chat where /summary was requested
+            for i in range(0, len(summary), max_chunk):
+                send_message(chat_id, summary[i : i + max_chunk])
+            send_message(chat_id, "הערה: לא הצלחתי לשלוח הודעה פרטית — שולח את הסיכום כאן בקבוצה במקום.")
+        else:
+            send_message(chat_id, "הסיכום נשלח אליך בפרטי.")
+
         return jsonify({"ok": True})
 
     # /reset - admin only
@@ -160,31 +169,35 @@ def webhook():
         send_message(chat_id, "מאגר ההזמנות אופס.")
         return jsonify({"ok": True})
 
-    # Only accept ordinary messages when a session is active and it's in the group
+    # Regular group messages while session active: handle multiline -> multiple orders
     if session_active and chat_id == group_chat_id:
-        # ignore other bot commands
-        if text.startswith("/"):
+        if not text or text.startswith("/"):
             return jsonify({"ok": True})
 
-        category = classify_text(text)
-        orders.append(
-            {
+        # Split by lines and classify each line separately
+        lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        if not lines:
+            return jsonify({"ok": True})
+
+        categories_for_lines = []
+        for line in lines:
+            cat = classify_text(line)
+            orders.append({
                 "user_id": user_id,
                 "username": username,
-                "text": text,
-                "category": category,
+                "text": line,
+                "category": cat,
                 "message_id": message.get("message_id"),
-            }
-        )
+            })
+            categories_for_lines.append(cat)
 
-        # reply with the category (as a reply to their message)
-        send_message(chat_id, category, reply_to_message_id=message.get("message_id"))
+        # Reply with the category per line (one category per line, Hebrew)
+        reply_text = "\n".join(categories_for_lines) if len(categories_for_lines) > 1 else categories_for_lines[0]
+        send_message(chat_id, reply_text, reply_to_message_id=message.get("message_id"))
         return jsonify({"ok": True})
 
-    # otherwise, ignore (no error)
     return jsonify({"ok": True})
 
-# simple health-check root
 @app.route("/", methods=["GET"])
 def index():
     status = {
@@ -195,5 +208,3 @@ def index():
         "orders_count": len(orders),
     }
     return jsonify(status)
-
-# End of file
